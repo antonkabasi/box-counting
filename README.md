@@ -1,12 +1,20 @@
-# 🌈 Box Counting Fractal Dimension
+# Box Counting Fractal Dimension with uncertainty calculation
 
-TL;DR (students)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
+
+TL;DR
 - Binary (black/white) images: put your file in `in/` and run `make analyze_in`. Results land in `out/results/<name>/` (plots, CSV/TXT, and `grids/`). Open `out/results/<name>/<name>.png`.
 - Grayscale images: try preprocessing — run `make analyze_in PREP=true`. Then check `out/results/<name>/grids/` to see if the cleaned mask/outline looks right. If not, tweak cleaner knobs (see “Preprocess” below) or do it manually in an image editor of choice, rerun, and compare again.
 
 - Play around: you won’t break anything!
 
-Estimate the (area) box-counting fractal dimension from images, with a focus on electron microscope and atomic force microscope microstructures. Tested to work on famous fractals, and 2D primitives and results are consistent with literature. 
+Scholarly Use Notice
+- Scholarly use requires prior notice and citation. Read `ACADEMIC_USE_LICENSE.md`.
+- Contact: anton.kabasi.gm@gmail.com
+- Cite using `CITATION.cff`.
+
+Estimate the (area) box-counting fractal dimension from images, with a focus on electron microscope and atomic force microscope microstructures. Tested to work on famous fractals, and 2D primitives - results are consistent with literature. 
 
 Includes helpers and tests for simple primitives (line, rectangle, sine, circle) and a classic fractal (Sierpiński triangle).
 

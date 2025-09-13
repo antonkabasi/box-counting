@@ -20,6 +20,8 @@ Usage examples:
 import argparse
 import math
 import os
+import subprocess
+from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -339,6 +341,14 @@ def main():
     else:
         # lightweight CSV writer
         np.savetxt(csv_path, table, delimiter=",", header=",".join(header), comments="", fmt="%.8g")
+    # Append provenance footer
+    try:
+        rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        rev = "unknown"
+    stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    with open(csv_path, "a", encoding="utf-8") as fcsv:
+        fcsv.write(f"\n# generated-by: boxcount (rev={rev}, utc={stamp})\n")
 
     # choose fit window
     k0 = int(np.clip(args.drop_head, 0, len(s_px)))
@@ -432,6 +442,13 @@ def main():
         ax.legend()
         ax.grid(True, which="both", linewidth=0.5, alpha=0.5)
         png_path = args.out + ".png"
+        # Provenance footer
+        try:
+            rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            rev = "unknown"
+        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        fig.text(0.01, 0.01, f"boxcount rev {rev} · {stamp}", fontsize=6, color="#555", alpha=0.7)
         fig.tight_layout()
         fig.savefig(png_path)
         plt.close(fig)
@@ -454,6 +471,12 @@ def main():
         ax.set_ylabel("N(ε)")
         ax.legend()
         ax.grid(True, which="both", linewidth=0.5, alpha=0.5)
+        try:
+            rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            rev = "unknown"
+        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        fig.text(0.01, 0.01, f"boxcount rev {rev} · {stamp}", fontsize=6, color="#555", alpha=0.7)
         fig.tight_layout()
         fig.savefig(args.out + "_linear.png")
         plt.close(fig)
