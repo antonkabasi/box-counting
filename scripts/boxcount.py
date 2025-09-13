@@ -21,13 +21,13 @@ import argparse
 import math
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from dataclasses import dataclass
 from typing import List, Tuple, Sequence, Optional
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from colorama import Fore, Style, init as colorama_init
 
 try:
@@ -135,7 +135,8 @@ def make_offsets(s: int, n: int, rng: np.random.Generator) -> List[Tuple[int, in
 
 
 def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, int]],
-                             occupancy: str = "any", frac_tau: float = 0.05) -> Tuple[float, float, int]:
+                             occupancy: str = "any", frac_tau: float = 0.05,
+                             use_integral: bool = False) -> Tuple[float, float, int]:
     """Count occupied boxes at size s for multiple grid origins; return (mean, std, n).
     occupancy: 'any' (any pixel), 'center' (center pixel), 'frac' (>= tau fraction)
     """
@@ -155,12 +156,29 @@ def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, 
             centers = sub[cy::s, cx::s]
             occ = centers
         else:
-            blocks = sub.reshape(h2 // s, s, w2 // s, s)
-            if occupancy == "frac":
-                tsum = blocks.sum(axis=(1, 3))
-                occ = tsum >= (frac_tau * (s * s))
-            else:  # 'any'
-                occ = blocks.any(axis=(1, 3))
+            if use_integral:
+                # Summed-area table over sub
+                a = sub.astype(np.int32)
+                sat = a.cumsum(axis=0).cumsum(axis=1)
+                sat2 = np.zeros((h2 + 1, w2 + 1), dtype=np.int64)
+                sat2[1:, 1:] = sat
+                ys = np.arange(0, h2, s)
+                xs = np.arange(0, w2, s)
+                Y0, X0 = np.meshgrid(ys, xs, indexing='ij')
+                Y1 = Y0 + s
+                X1 = X0 + s
+                sums = sat2[Y1, X1] - sat2[Y0, X1] - sat2[Y1, X0] + sat2[Y0, X0]
+                if occupancy == "frac":
+                    occ = sums >= (frac_tau * (s * s))
+                else:
+                    occ = sums > 0
+            else:
+                blocks = sub.reshape(h2 // s, s, w2 // s, s)
+                if occupancy == "frac":
+                    tsum = blocks.sum(axis=(1, 3))
+                    occ = tsum >= (frac_tau * (s * s))
+                else:  # 'any'
+                    occ = blocks.any(axis=(1, 3))
         counts.append(int(occ.sum()))
     counts = np.array(counts, dtype=float)
     return float(np.mean(counts)), float(np.std(counts, ddof=1) if len(counts) > 1 else 0.0), int(len(counts))
@@ -312,7 +330,7 @@ def main():
     for s in iter_sizes:
         offs = make_offsets(s, max(1, args.grid_averages), rng_main)
         all_offsets[int(s)] = offs
-        meanN, stdN, nrep = count_boxes_with_offsets(mask, int(s), offs, occupancy=args.occupancy, frac_tau=float(args.frac))
+        meanN, stdN, nrep = count_boxes_with_offsets(mask, int(s), offs, occupancy=args.occupancy, frac_tau=float(args.frac), use_integral=bool(args.integral))
         # degenerate guard
         if meanN <= 0.0:
             warnings_list.append(f"scale s={s}: mean count is zero; dropped from fit")
@@ -322,10 +340,22 @@ def main():
         if args.save_grids and args.out:
             grids_dir = os.path.join(os.path.dirname(args.out), "grids")
             os.makedirs(grids_dir, exist_ok=True)
-            # Render over the (post-crop) binary mask for alignment
-            base = Image.fromarray((~mask * 255).astype(np.uint8)) if mask.dtype == bool else Image.fromarray(mask)
-            base = base.convert("RGB")
+            # Render on a white background with a faint outline of the structure
             h, w = mask.shape
+            base = Image.new("RGB", (w, h), (255, 255, 255))
+            try:
+                mask_img = Image.fromarray((mask.astype(np.uint8) * 255))
+                eroded = mask_img.filter(ImageFilter.MinFilter(3))
+                er = np.array(eroded, dtype=np.uint8) >= 128
+                edge = mask & (~er)
+                # Draw the edge as light gray to avoid "black screen" on filled shapes
+                edge_y, edge_x = np.where(edge)
+                if edge_y.size:
+                    d_edge = ImageDraw.Draw(base)
+                    for yy, xx in zip(edge_y.tolist(), edge_x.tolist()):
+                        d_edge.point((int(xx), int(yy)), fill=(80, 80, 80))
+            except Exception:
+                pass
             m = max(1, int(args.grids_max_offsets))
             for (ox, oy) in offs[:m]:
                 img_overlay = base.copy()
@@ -449,7 +479,7 @@ def main():
             for s in geometric_box_sizes(int(args.min_box), int(args.max_box), int(args.scales)):
                 # random offsets
                 offs_b = [(int(rng.integers(0, s)), int(rng.integers(0, s))) for _ in range(Kb)]
-                meanN_b, stdN_b, _ = count_boxes_with_offsets(mask, s, offs_b)
+                meanN_b, stdN_b, _ = count_boxes_with_offsets(mask, s, offs_b, occupancy=args.occupancy, frac_tau=float(args.frac), use_integral=bool(args.integral))
                 rows_b.append((s, meanN_b, stdN_b))
             tb = np.array(rows_b, dtype=float)
             s_b = tb[:, 0]
@@ -514,7 +544,7 @@ def main():
             rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
         except Exception:
             rev = "unknown"
-        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         fig.text(0.01, 0.01, f"boxcount rev {rev} · {stamp}", fontsize=6, color="#555", alpha=0.7)
         fig.tight_layout()
         fig.savefig(png_path)
@@ -542,7 +572,7 @@ def main():
             rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
         except Exception:
             rev = "unknown"
-        stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         fig.text(0.01, 0.01, f"boxcount rev {rev} · {stamp}", fontsize=6, color="#555", alpha=0.7)
         fig.tight_layout()
         fig.savefig(args.out + "_linear.png")

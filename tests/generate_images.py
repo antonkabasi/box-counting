@@ -34,10 +34,21 @@ def gen_sine(w=1024, h=1024, margin=80, width=1, wavelength_px=400):
     d.line(pts, fill=0, width=width)
     return img
 
-def gen_rectangle(w=1024, h=1024, margin=150):
+def gen_rectangle(w=1024, h=1024, side_frac=0.35, line_width=6, filled=True):
+    """Rectangle centered on a white background (smaller size).
+    side_frac: rectangle side length as a fraction of min(w, h).
+    If filled=True, draw a solid black rectangle (area set, D≈2 expected); else outline-only.
+    """
     img = Image.new("L", (w, h), 255)
     d = ImageDraw.Draw(img)
-    d.rectangle([margin, margin, w - margin, h - margin], fill=0, outline=0, width=1)
+    side = max(8, int(side_frac * min(w, h)))
+    cx, cy = w // 2, h // 2
+    x0, y0 = cx - side // 2, cy - side // 2
+    x1, y1 = cx + side // 2, cy + side // 2
+    if filled:
+        d.rectangle([x0, y0, x1, y1], fill=0, outline=0, width=1)
+    else:
+        d.rectangle([x0, y0, x1, y1], fill=None, outline=0, width=line_width)
     return img
 
 def gen_circle(w=1024, h=1024, margin=150):
