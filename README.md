@@ -10,7 +10,7 @@ TL;DR
 - Play around: you won’t break anything!
 
 Scholarly Use Notice
-- Scholarly use requires prior notice and citation. Read `ACADEMIC_USE_LICENSE.md`.
+- Scholarly use requires prior notice and citation. Read `ACADEMIC_USE_LICENSE.md` (see the end of this README).
 - Contact: anton.kabasi.gm@gmail.com
 - Cite using `CITATION.cff`.
 
@@ -34,20 +34,19 @@ Includes helpers and tests for simple primitives (line, rectangle, sine, circle)
 - In the bootstrap, each replicate uses `--boot-grid-averages` Kb origins per scale (defaults to K). We redraw these origins independently every replicate.
 - Practical guidance: K=4–8 is a good default; Kb should usually match K. Increasing them improves stability but costs time.
 
-🧩 Methodology at a Glance
-- For each geometric ladder of box sizes `s`:
-  1) Do K grid moves `(ox, oy)` per scale; record K counts; compute `N_mean(s)` and `N_std(s)`.
-  2) Build regression data in the log domain: `x = log(1/ε)`, `y = log N_mean(s)` (with `ε=s` unless `--pixel-size` is given).
-  3) Fit slope `D` on a chosen window (drop_head/tail) via weighted least squares (WLS) with weights `w_i = 1 / Var[log N_i]` where
-     - `se_N(s) = N_std(s)/sqrt(K)` (standard error of the mean across K placements)
-     - `se_log(s) ≈ se_N(s) / N_mean(s)` (delta method) → `Var[log N(s)] ≈ se_log(s)^2`.
-  4) Report the fit with:
-     - `D` and its WLS standard error (fit CI, line-mean uncertainty)
-     - Error bars on points: in log plot `yerr = se_log`, in linear plot `yerr = se_N`.
-  5) Measurement uncertainty (bootstrap) with `B` replicates:
-     - For each replicate, redraw Kb placements per scale, recompute `N_mean_b(s)` and `y_b(s)=log N_mean_b(s)` and refit WLS on the same window.
-     - Prediction interval (PI) on log plot: for each observed `x`, take percentiles of `{y_b(x)}` across replicates; the shaded band is the per‑x envelope; dashed line is the bootstrap median.
-     - The linear plot shows the exponentiated PI (multiplicative band).
+🧮 How It Works (with formulas)
+- Box counting:
+  - `N(ε) ≈ C·ε^{-D}` ⇒ `y = log N(ε) ≈ D·x + log C`, where `x = log(1/ε)`.
+  - Dimension: `D = d log N / d log(1/ε)` (slope of `y` vs `x`).
+- Per‑scale stats (K grid moves):
+  - `N_mean(s)`, `N_std(s)` across K placements; `se_N(s) = N_std(s)/√K`.
+  - Delta method: `se_log(s) ≈ se_N(s)/N_mean(s)`; use `w_i = 1/se_log(s_i)^2` in WLS.
+- WLS fit on a window:
+  - Slope `D̂`, with `SE(D̂) = √(σ̂² / Σ w_i (x_i − x̄_w)^2)` and `σ̂² = RSS_w/(n−2)`.
+  - Error bars: log plot `yerr = se_log`; linear plot `yerr = se_N`.
+- Bootstrap prediction interval (PI):
+  - Repeat B times: redraw Kb placements per scale, recompute `y_b(s)=log N_mean_b(s)`, refit WLS.
+  - For each observed `x`, take percentiles of `{y_b(x)}` ⇒ shaded PI; dashed = bootstrap median. Linear plot uses `exp(PI)`.
 
 🔧 Defaults in Make vs CLI
 - Makefile defaults (examples and your runs): `--grid-averages 4`, `--bootstrap 50`, `--band prediction` and, when `PREP=true`, padding `PAD_ON_PREP=8` is applied before counting.
@@ -261,10 +260,10 @@ Includes helpers and tests for simple primitives (line, rectangle, sine, circle)
   - Co‑authorship is expected when the Author provides substantial additional
     intellectual contributions (new features, methods, analysis design, interpretation).
   - If you cannot accept the addendum terms, contact the Author for a separate license.
-- Contact: anton.kabasi.gm@gmail.com
+  
 
 ✉️ Prior Notice Template (for Scholarly Use)
-Please email the following to anton.kabasi.gm@gmail.com at least 14 days before submission:
+Please email the following to the contact above at least 14 days before submission:
 
 Subject: Prior notice of scholarly use — box-counting software
 
