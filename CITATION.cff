@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: Box-counting fractal dimension for images
+authors:
+  - family-names: Kabaši
+    given-names: Anton
+    email: anton.kabasi.gm@gmail.com
+repository-code: https://github.com/antonkabasi/box-counting
+license: BSD-3-Clause
+version: 0.1.0
+date-released: 2025-09-13
+type: software
+keywords:
+  - fractal-dimension
+  - box-counting
+  - image-analysis
+  - microscopy
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Kabaši
+      given-names: Anton
+  title: Estimating box-counting fractal dimension from images with grid averaging
+  year: 2025
+  doi: to be added

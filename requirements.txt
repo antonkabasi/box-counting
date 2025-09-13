@@ -1,0 +1,11 @@
+numpy
+pillow
+pandas
+matplotlib
+colorama
+geopandas
+shapely
+pyproj
+fiona
+pytest
+geodatasets
