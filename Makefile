@@ -19,6 +19,7 @@ OUTDIR    := out
 RESULTS_OUTDIR := $(OUTDIR)/results
 RESULTS_OUT_PREFIX := $(if $(RUN),$(RESULTS_OUTDIR)/$(RUN),$(RESULTS_OUTDIR))
 EX_OUTDIR := $(OUTDIR)/examples
+EX_STAMP  := $(EX_OUTDIR)/.stamp
 GEODIR    := $(IMAGEDIR)/geography
 EX_GEO_DIR:= $(EX_OUTDIR)/geography
 RES_GEO_DIR:= $(RESULTS_OUTDIR)/geography
@@ -27,9 +28,21 @@ SRC_DATA  := $(if $(SOURCE),$(SOURCE),$(GEO_DATA))
 SRC_URL   := $(if $(SOURCE_URL),$(SOURCE_URL),https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson)
 
 IMAGES    := $(IMAGEDIR)/line.png $(IMAGEDIR)/sine.png $(IMAGEDIR)/rectangle.png $(IMAGEDIR)/circle.png $(IMAGEDIR)/sierpinski.png
-PLOTS     := $(EX_OUTDIR)/line/line.png $(EX_OUTDIR)/sine/sine.png $(EX_OUTDIR)/rectangle/rectangle.png $(EX_OUTDIR)/circle/circle.png $(EX_OUTDIR)/sierpinski/sierpinski.png
+FRACTALS  := cantor1d cantordust koch vicsek qkoch1 \
+             sierpinski carpet peano hexaflake
+FRACDIR   := $(IMAGEDIR)/fractals
+FRAC_IMAGES := $(addprefix $(FRACDIR)/,$(addsuffix .png,$(FRACTALS)))
 
-.PHONY: all venv deps generate examples analyze show line sine rectangle dims clean distclean seed_in
+# Main example plots (explicitly enumerate fractal outputs)
+PLOTS     := $(EX_OUTDIR)/line/line.png \
+             $(EX_OUTDIR)/sine/sine.png \
+             $(EX_OUTDIR)/rectangle/rectangle.png \
+             $(EX_OUTDIR)/circle/circle.png \
+             $(EX_OUTDIR)/sierpinski/sierpinski.png \
+             $(foreach f,$(FRACTALS),$(EX_OUTDIR)/fractals/$(f)/$(f).png)
+
+.PHONY: all venv deps generate examples analyze show line sine rectangle dims clean distclean seed_in redo-examples \
+        analyze_image analyze_in dims_results dims_real geography geography-% uk croatia
 
 all: deps generate examples
 
@@ -56,6 +69,9 @@ $(GEODIR): | $(IMAGEDIR)
 $(EX_GEO_DIR): | $(EX_OUTDIR)
 	@mkdir -p $(EX_GEO_DIR)
 
+$(FRACDIR): | $(IMAGEDIR)
+	@mkdir -p $(FRACDIR)
+
 $(RES_GEO_DIR): | $(RESULTS_OUTDIR)
 	@mkdir -p $(RES_GEO_DIR)
 
@@ -66,7 +82,7 @@ $(INDIR):
 $(RESULTS_OUTDIR): | $(OUTDIR)
 	@mkdir -p $(RESULTS_OUTDIR)
 
-generate: $(IMAGES)
+generate: $(IMAGES) $(FRAC_IMAGES)
 	@echo "[ok] test images generated in $(IMAGEDIR)/"
 
 # Cleaning (preprocess) defaults (override on CLI). Booleans accept: true/false, yes/no, on/off, 1/0.
@@ -142,27 +158,39 @@ endif
 
 # Image generation rules
 $(IMAGEDIR)/line.png: tests/generate_images.py | $(IMAGEDIR) venv
-	$(PY) tests/generate_images.py --line --outdir $(IMAGEDIR)
+	@test -f $@ || $(PY) tests/generate_images.py --line --outdir $(IMAGEDIR)
 
 $(IMAGEDIR)/sine.png: tests/generate_images.py | $(IMAGEDIR) venv
-	$(PY) tests/generate_images.py --sine --outdir $(IMAGEDIR)
+	@test -f $@ || $(PY) tests/generate_images.py --sine --outdir $(IMAGEDIR)
 
 $(IMAGEDIR)/rectangle.png: tests/generate_images.py | $(IMAGEDIR) venv
-	$(PY) tests/generate_images.py --rectangle --outdir $(IMAGEDIR)
+	@test -f $@ || $(PY) tests/generate_images.py --rectangle --outdir $(IMAGEDIR)
 
 $(IMAGEDIR)/circle.png: tests/generate_images.py | $(IMAGEDIR) venv
-	$(PY) tests/generate_images.py --circle --outdir $(IMAGEDIR)
+	@test -f $@ || $(PY) tests/generate_images.py --circle --outdir $(IMAGEDIR)
 
 $(IMAGEDIR)/sierpinski.png: tests/generate_images.py | $(IMAGEDIR) venv
-	$(PY) tests/generate_images.py --sierpinski --outdir $(IMAGEDIR)
+	@test -f $@ || $(PY) tests/generate_images.py --sierpinski --outdir $(IMAGEDIR)
+
+# Fractals generation
+FRAC_ITERS ?= 4
+$(FRACDIR)/%.png: tests/generate_fractals.py | $(FRACDIR) venv
+	@test -f $@ || $(PY) tests/generate_fractals.py --name $* --iters $(FRAC_ITERS) --outdir $(FRACDIR)
 
 # Geography images (from Natural Earth via GeoPandas)
 $(GEODIR)/%.png: tests/generate_geography.py | $(GEODIR) venv
 	$(PY) tests/generate_geography.py --country $* --outdir $(GEODIR) --mode outline --line-width 3 --source $(SRC_DATA) --source-url $(SRC_URL) --crs auto
 
-# Examples: runs boxcount.py, saves per-example folders under out/examples/<name>/<name>.*
-examples: generate $(PLOTS)
+# === Examples with stamp so 2nd run skips building if up-to-date ===
+examples: $(EX_STAMP)
+
+$(EX_STAMP): generate $(PLOTS) | $(EX_OUTDIR)
 	@echo "[ok] examples complete. See $(EX_OUTDIR)/{line,sine,rectangle,circle,sierpinski}/<name>.{csv,txt,png,_linear.png} and grids/"
+	@touch $@
+
+redo-examples:
+	@rm -f $(EX_STAMP)
+	@$(MAKE) examples
 
 # Back-compat alias
 analyze: examples
@@ -175,6 +203,17 @@ $(EX_OUTDIR)/line/line.png: $(IMAGEDIR)/line.png | $(EX_OUTDIR) venv
 	  --out $(EX_OUTDIR)/line/line \
 	  --threshold fixed --fixed-thresh 128 --invert --crop \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+
+# Fractal example plots
+$(EX_OUTDIR)/fractals/%/%.png: $(FRACDIR)/%.png | $(EX_OUTDIR) venv
+	@mkdir -p $(EX_OUTDIR)/fractals/$*
+	$(PY) scripts/boxcount.py \
+	  --image $< \
+	  --out $(EX_OUTDIR)/fractals/$*/$* \
+	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
+	  --seed 12345 --auto-window --band prediction \
 	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
 
 $(EX_OUTDIR)/sine/sine.png: $(IMAGEDIR)/sine.png | $(EX_OUTDIR) venv
@@ -395,15 +434,11 @@ geography-%: $(GEODIR)/%.png | $(RES_GEO_DIR)
 uk: geography-uk
 croatia: geography-croatia
 
-
 dims: examples
 	@for f in $(EX_OUTDIR)/*/*.txt; do \
 	  echo "==== $$f ===="; \
 	  grep -E "Fractal dimension" "$$f" || true; \
 	done
-
-
-
 
 clean:
 	@rm -rf $(EX_OUTDIR) $(RESULTS_OUTDIR)
