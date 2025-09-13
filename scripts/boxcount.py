@@ -22,8 +22,9 @@ import math
 import os
 import subprocess
 from datetime import datetime
+import json
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Sequence, Optional
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -38,6 +39,12 @@ try:
     import matplotlib.pyplot as plt
 except Exception:
     plt = None
+
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:
+    def tqdm(x, **kwargs):  # minimal fallback
+        return x
 
 
 def otsu_threshold_u8(img_u8: np.ndarray) -> int:
@@ -113,12 +120,11 @@ def geometric_box_sizes(min_box: int, max_box: int, scales: int) -> List[int]:
     return vals
 
 
-def make_offsets(s: int, n: int) -> List[Tuple[int, int]]:
-    """Grid-origin offsets (ox, oy) in [0, s-1]. Use 4 deterministic first, then random."""
+def make_offsets(s: int, n: int, rng: np.random.Generator) -> List[Tuple[int, int]]:
+    """Grid-origin offsets (ox, oy) in [0, s-1]. Use 4 deterministic first, then RNG."""
     base = [(0, 0), (s // 2, 0), (0, s // 2), (s // 2, s // 2)]
     if n <= 4:
         return base[:n]
-    rng = np.random.default_rng(12345)
     extras = set()
     while len(extras) < (n - 4):
         ox = int(rng.integers(0, s))
@@ -128,8 +134,11 @@ def make_offsets(s: int, n: int) -> List[Tuple[int, int]]:
     return base + sorted(list(extras))
 
 
-def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, int]]) -> Tuple[float, float, int]:
-    """Count occupied boxes at size s for multiple grid origins; return (mean, std, n)."""
+def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, int]],
+                             occupancy: str = "any", frac_tau: float = 0.05) -> Tuple[float, float, int]:
+    """Count occupied boxes at size s for multiple grid origins; return (mean, std, n).
+    occupancy: 'any' (any pixel), 'center' (center pixel), 'frac' (>= tau fraction)
+    """
     H, W = mask.shape
     counts = []
     for (ox, oy) in offsets:
@@ -140,9 +149,18 @@ def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, 
         pad[:H, :W] = mask
         sub = pad[oy:H2, ox:W2]
         h2, w2 = sub.shape
-        # reshape to blocks and 'any' reduce within each block
-        blocks = sub.reshape(h2 // s, s, w2 // s, s)
-        occ = blocks.any(axis=(1, 3))
+        if occupancy == "center":
+            cy = s // 2
+            cx = s // 2
+            centers = sub[cy::s, cx::s]
+            occ = centers
+        else:
+            blocks = sub.reshape(h2 // s, s, w2 // s, s)
+            if occupancy == "frac":
+                tsum = blocks.sum(axis=(1, 3))
+                occ = tsum >= (frac_tau * (s * s))
+            else:  # 'any'
+                occ = blocks.any(axis=(1, 3))
         counts.append(int(occ.sum()))
     counts = np.array(counts, dtype=float)
     return float(np.mean(counts)), float(np.std(counts, ddof=1) if len(counts) > 1 else 0.0), int(len(counts))
@@ -178,28 +196,30 @@ def linear_fit(x: np.ndarray, y: np.ndarray) -> FitResult:
     return FitResult(slope=m, intercept=b, r2=r2, n=n, slope_stderr=slope_stderr, intercept_stderr=intercept_stderr)
 
 
-def weighted_linear_fit(x: np.ndarray, y: np.ndarray, w: np.ndarray | None) -> FitResult:
+def weighted_linear_fit(x: np.ndarray, y: np.ndarray, w: Optional[np.ndarray]) -> FitResult:
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     if w is None:
         return linear_fit(x, y)
     w = np.asarray(w, dtype=float)
     X = np.column_stack([x, np.ones_like(x)])
-    W = np.diag(w)
-    XtW = X.T @ W
-    XtWX = XtW @ X
-    # regularize if singular
-    try:
-        XtWX_inv = np.linalg.inv(XtWX)
-    except np.linalg.LinAlgError:
-        XtWX_inv = np.linalg.pinv(XtWX)
-    beta = XtWX_inv @ (XtW @ y)
+    sw = np.sqrt(np.maximum(w, 0.0))
+    Xw = X * sw[:, None]
+    yw = y * sw
+    # least squares on weighted design
+    beta, *_ = np.linalg.lstsq(Xw, yw, rcond=None)
     m, b = float(beta[0]), float(beta[1])
     yhat = m * x + b
     r = y - yhat
     n = len(x)
     dof = max(1, n - 2)
-    ss_res_w = float(r.T @ (w * r))
+    ss_res_w = float(np.sum(w * r * r))
+    # Covariance via (X^T W X)^-1 scaled by residual variance
+    XtWX = X.T @ (w[:, None] * X)
+    try:
+        XtWX_inv = np.linalg.inv(XtWX)
+    except np.linalg.LinAlgError:
+        XtWX_inv = np.linalg.pinv(XtWX)
     sigma2 = ss_res_w / dof
     cov = sigma2 * XtWX_inv
     slope_stderr = float(np.sqrt(max(cov[0, 0], 0.0)))
@@ -236,6 +256,13 @@ def main():
                     help="Shaded band type on log–log plot: prediction (default) or fit (line CI)")
     ap.add_argument("--save-grids", action="store_true", help="Save grid overlay images under a 'grids/' subfolder next to outputs")
     ap.add_argument("--grids-max-offsets", type=int, default=1, help="Max number of grid offsets to render per box size (default: 1)")
+    ap.add_argument("--seed", type=int, default=12345, help="RNG seed for grid offsets (reproducibility)")
+    ap.add_argument("--auto-window", action="store_true", help="Auto-pick fit window (min width ≥5) by max R², tie-break by minimal curvature")
+    ap.add_argument("--min-window", type=int, default=5, help="Minimum number of scales in the fit window when --auto-window")
+    ap.add_argument("--integral", action="store_true", help="Use summed-area table optimisation (optional)")
+    ap.add_argument("--occupancy", choices=["any","center","frac"], default="any", help="Box occupancy rule")
+    ap.add_argument("--frac", type=float, default=0.05, help="τ for occupancy=frac (fraction of pixels in a box)")
+    ap.add_argument("--progress", action="store_true", help="Show per-scale progress if tqdm is available")
     args = ap.parse_args()
 
     # colorful console output
@@ -278,9 +305,17 @@ def main():
     sizes = geometric_box_sizes(args.min_box, args.max_box, args.scales)
 
     rows = []
-    for s in sizes:
-        offs = make_offsets(s, max(1, args.grid_averages))
-        meanN, stdN, nrep = count_boxes_with_offsets(mask, s, offs)
+    rng_main = np.random.default_rng(int(args.seed))
+    iter_sizes = tqdm(sizes, desc="scales") if args.progress else sizes
+    warnings_list = []
+    all_offsets = {}
+    for s in iter_sizes:
+        offs = make_offsets(s, max(1, args.grid_averages), rng_main)
+        all_offsets[int(s)] = offs
+        meanN, stdN, nrep = count_boxes_with_offsets(mask, int(s), offs, occupancy=args.occupancy, frac_tau=float(args.frac))
+        # degenerate guard
+        if meanN <= 0.0:
+            warnings_list.append(f"scale s={s}: mean count is zero; dropped from fit")
         rows.append((s, meanN, stdN, nrep))
 
         # Optional: save grid overlay images for the first few offsets
@@ -331,8 +366,11 @@ def main():
 
     # Build DataFrame or plain CSV
     header = ["box_size_px", "N_boxes_mean", "N_boxes_std", "n_grid_averages",
-              eps_label, "inv_epsilon", "log_inv_epsilon", "log_N"]
-    table = np.column_stack([s_px, N_mean, N_std, nrep, eps, inv_eps, log_inv_eps, log_N])
+              eps_label, "inv_epsilon", "log_inv_epsilon", "log_N", "in_fit_window", "offsets"]
+    # placeholder for in_fit_window (filled later) and offsets
+    in_fit = np.zeros_like(s_px, dtype=bool)
+    offsets_col = np.array([";".join([f"{ox}:{oy}" for (ox,oy) in all_offsets[int(s)]]) for s in s_px], dtype=object)
+    table = np.column_stack([s_px, N_mean, N_std, nrep, eps, inv_eps, log_inv_eps, log_N, in_fit, offsets_col])
 
     csv_path = args.out + ".csv"
     if pd is not None:
@@ -353,6 +391,28 @@ def main():
     # choose fit window
     k0 = int(np.clip(args.drop_head, 0, len(s_px)))
     k1 = int(np.clip(len(s_px) - args.drop_tail, k0 + 2, len(s_px)))  # need at least 2 points
+    if args.auto_window and len(s_px) >= max(5, args.min_window):
+        best = None
+        x_all = log_inv_eps
+        y_all = log_N
+        for i in range(0, len(s_px) - args.min_window + 1):
+            for j in range(i + args.min_window, len(s_px) + 1):
+                xi = x_all[i:j]
+                yi = y_all[i:j]
+                var_i = (N_std[i:j] / np.maximum(N_mean[i:j], 1e-12)) ** 2
+                wi = 1.0 / np.maximum(var_i, 1e-8)
+                fr = weighted_linear_fit(xi, yi, wi)
+                # curvature via quadratic fit magnitude
+                try:
+                    a2 = np.polyfit(xi, yi, 2)[0]
+                    curv = abs(a2)
+                except Exception:
+                    curv = 1e9
+                score = (fr.r2, -curv)  # maximize R2, then minimize curvature
+                if (best is None) or (score > best[0]):
+                    best = (score, i, j)
+        if best is not None:
+            k0, k1 = best[1], best[2]
     x = log_inv_eps[k0:k1]
     y = log_N[k0:k1]
 
@@ -363,6 +423,13 @@ def main():
 
     fit = weighted_linear_fit(x, y, w)
     dim = fit.slope  # box-counting (area) fractal dimension
+    # mark in_fit_window in table
+    in_fit = np.zeros(len(s_px), dtype=bool)
+    in_fit[k0:k1] = True
+    if pd is not None:
+        df["in_fit_window"] = in_fit
+        df["offsets"] = offsets_col
+        df.to_csv(csv_path, index=False)
 
     # Bootstrap over grid offsets (measurement uncertainty)
     boot = []
@@ -487,6 +554,9 @@ def main():
         f.write(f"Image: {args.image}\n")
         f.write(f"Threshold: {args.threshold} (fixed={args.fixed_thresh}), invert={args.invert}\n")
         f.write(f"Crop: {args.crop}\n")
+        f.write(f"Seed: {args.seed}\n")
+        f.write(f"Occupancy rule: {args.occupancy} (tau={args.frac})\n")
+        f.write(f"Fit window indices: [{k0}, {k1}) (min-window={args.min_window}, auto={args.auto_window})\n")
         f.write(f"Box sizes (px): {', '.join(map(lambda v: str(int(v)), s_px))}\n")
         f.write(f"Fit window: drop_head={args.drop_head}, drop_tail={args.drop_tail}\n")
         f.write(f"Fractal dimension (slope of log N vs log(1/ε)): {dim:.6f}\n")
@@ -496,10 +566,16 @@ def main():
         lo = fit.slope - z * fit.slope_stderr
         hi = fit.slope + z * fit.slope_stderr
         f.write(f"{args.ci}% CI for slope: [{lo:.6f}, {hi:.6f}]\n")
-        f.write(f"R^2: {fit.r2:.6f}\n")
+        f.write(f"R^2 (unweighted total variance): {fit.r2:.6f}\n")
         f.write(f"Fit points: {fit.n}\n")
         if args.pixel_size:
+            eps_phys = s_px * args.pixel_size
             f.write(f"Pixel size: {args.pixel_size} (physical units per pixel)\n")
+            f.write(f"Physical epsilon range: [{eps_phys.min():.6g}, {eps_phys.max():.6g}]\n")
+        if warnings_list:
+            f.write("Warnings:\n")
+            for wmsg in warnings_list:
+                f.write(f"- {wmsg}\n")
 
     print(f"{OK} CSV: {csv_path}")
     if args.plot and plt is not None:
@@ -521,6 +597,25 @@ def main():
         hi_b = float(np.quantile(slopes, hi_q))
         msg += f"\n{INFO} Bootstrap D: mean={mu:.6f}, sd={sd:.6f}, {args.ci}% CI {lo_b:.6f}..{hi_b:.6f} (B={len(slopes)})"
     print(msg)
+
+    # JSON metadata
+    try:
+        meta = {
+            "image": args.image,
+            "out": args.out,
+            "seed": int(args.seed),
+            "args": vars(args),
+            "window": {"k0": int(k0), "k1": int(k1)},
+            "D": float(fit.slope),
+            "SE": float(fit.slope_stderr),
+            "CI": {"level": int(args.ci), "lo": float(lo), "hi": float(hi)},
+            "R2_unweighted": float(fit.r2),
+            "scales_used": [int(v) for v in s_px.tolist()],
+        }
+        with open(args.out + ".json", "w", encoding="utf-8") as fj:
+            json.dump(meta, fj, indent=2)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

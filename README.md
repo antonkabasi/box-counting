@@ -88,7 +88,8 @@ Includes helpers and tests for simple primitives (line, rectangle, sine, circle)
       --out out/examples/line \
       --threshold fixed --fixed-thresh 128 --invert --crop \
       --min-box 2 --max-box 128 --scales 11 --grid-averages 4 \
-      --drop-head 2 --drop-tail 1 --bootstrap 50 --ci 95 --plot
+      --drop-head 2 --drop-tail 1 --bootstrap 50 --ci 95 \
+      --seed 12345 --auto-window --band prediction --plot --plot-linear
     ``
 
 📦 Inputs & Outputs
