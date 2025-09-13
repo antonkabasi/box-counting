@@ -226,10 +226,12 @@ def main():
     ap.add_argument("--drop-tail", type=int, default=0, help="Drop this many largest scales from the fit.")
     ap.add_argument("--plot", action="store_true", help="Save a PNG plot of log N vs log(1/ε) and the linear fit.")
     ap.add_argument("--plot-linear", action="store_true", help="Also save a non-log plot: N vs 1/ε (power-law curve)")
-    ap.add_argument("--ci", type=int, choices=[90, 95, 99], default=95, help="Confidence interval for slope uncertainty (90/95/99)")
+    ap.add_argument("--ci", type=int, choices=[90, 95, 99], default=95, help="Confidence/prediction interval level (90/95/99)")
     ap.add_argument("--bootstrap", type=int, default=0, help="Bootstrap replicates over grid offsets (0=off)")
     ap.add_argument("--boot-grid-averages", type=int, default=None, help="Offsets per scale for bootstrap (defaults to --grid-averages)")
     ap.add_argument("--boot-seed", type=int, default=123, help="Random seed for bootstrap offsets")
+    ap.add_argument("--band", choices=["prediction","fit"], default="prediction",
+                    help="Shaded band type on log–log plot: prediction (default) or fit (line CI)")
     ap.add_argument("--save-grids", action="store_true", help="Save grid overlay images under a 'grids/' subfolder next to outputs")
     ap.add_argument("--grids-max-offsets", type=int, default=1, help="Max number of grid offsets to render per box size (default: 1)")
     args = ap.parse_args()
@@ -354,14 +356,17 @@ def main():
 
     # Bootstrap over grid offsets (measurement uncertainty)
     boot = []
-    boot_lines = None
+    boot_lines = None   # for fit CI (lines)
+    boot_x = None       # x grid for fit CI lines
+    boot_pred_lo = boot_pred_hi = boot_pred_med = None  # for prediction band at data x
     if args.bootstrap and args.bootstrap > 0:
         B = int(args.bootstrap)
         Kb = int(args.boot_grid_averages) if args.boot_grid_averages is not None else int(max(1, args.grid_averages))
         rng = np.random.default_rng(int(args.boot_seed))
-        # Prepare x-grid for envelope
-        xgrid = np.linspace(x.min(), x.max(), 200)
-        ylines = []
+        # Prepare x-grid for envelope over the FULL visible domain, not just the fit window
+        boot_x = np.linspace(log_inv_eps.min(), log_inv_eps.max(), 200)
+        ylines = []   # for fit CI (lines)
+        ypts = []     # for prediction band (values at each observed x)
         for b in range(B):
             rows_b = []
             for s in geometric_box_sizes(int(args.min_box), int(args.max_box), int(args.scales)):
@@ -385,24 +390,43 @@ def main():
             w_fit = 1.0 / np.maximum(var_b[k0:k1], 1e-8)
             fb = weighted_linear_fit(x_fit, y_fit, w_fit)
             boot.append(fb)
-            ylines.append(fb.slope * xgrid + fb.intercept)
+            ylines.append(fb.slope * boot_x + fb.intercept)
+            # store prediction values at observed x locations (full domain)
+            # ensure same ordering as log_inv_eps
+            ypts.append(y_b)
         boot = boot
         boot_lines = np.vstack(ylines)
+        # prediction band percentiles at each observed x point
+        Y = np.vstack(ypts)  # shape [B, n_pts]
+        lo_q, hi_q = (0.05, 0.95) if args.ci == 90 else ((0.005, 0.995) if args.ci == 99 else (0.025, 0.975))
+        boot_pred_lo = np.quantile(Y, lo_q, axis=0)
+        boot_pred_hi = np.quantile(Y, hi_q, axis=0)
+        boot_pred_med = np.median(Y, axis=0)
 
     # Save log–log plot if requested
     if args.plot and plt is not None:
         fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
-        ax.scatter(log_inv_eps, log_N, label="data", s=18)
-        # Draw fit line across the full data x-range, not only fit window
+        # Error bars in log-domain: use standard error of the mean across offsets
+        # se_N = N_std / sqrt(nrep); for log: se_log ≈ se_N / N_mean (delta method)
+        se_N = N_std / np.sqrt(np.maximum(nrep, 1))
+        yerr_log = np.clip(se_N / np.maximum(N_mean, 1e-12), 0.0, np.inf)
+        ax.errorbar(log_inv_eps, log_N, yerr=yerr_log, fmt='o', ms=4, elinewidth=1.0,
+                    capsize=2, color='tab:blue', ecolor='tab:blue', alpha=0.9, label="data")
+        # Fit line across the full x-range
         xx = np.linspace(log_inv_eps.min(), log_inv_eps.max(), 200)
         yy = fit.slope * xx + fit.intercept
-        ax.plot(xx, yy, label=f"fit: D={dim:.4f}, R²={fit.r2:.4f}")
-        # Bootstrap CI band
-        if boot_lines is not None:
+        ax.plot(xx, yy, label=f"fit: D={dim:.4f} ± {fit.slope_stderr:.4f}, R²={fit.r2:.4f}")
+        # Bootstrap band
+        if args.band == "fit" and boot_lines is not None:
             lo_q, hi_q = (0.05, 0.95) if args.ci == 90 else ((0.005, 0.995) if args.ci == 99 else (0.025, 0.975))
             lo = np.quantile(boot_lines, lo_q, axis=0)
             hi = np.quantile(boot_lines, hi_q, axis=0)
-            ax.fill_between(xx, lo, hi, color='tab:blue', alpha=0.15, label=f"{args.ci}% CI (bootstrap)")
+            med = np.median(boot_lines, axis=0)
+            ax.fill_between(boot_x, lo, hi, color='tab:blue', alpha=0.15, label=f"{args.ci}% CI (bootstrap fit)")
+            ax.plot(boot_x, med, color='tab:blue', alpha=0.35, linewidth=2, linestyle='--', label='bootstrap median')
+        elif args.band == "prediction" and boot_pred_lo is not None:
+            ax.fill_between(log_inv_eps, boot_pred_lo, boot_pred_hi, color='tab:blue', alpha=0.15, label=f"{args.ci}% PI (bootstrap)")
+            ax.plot(log_inv_eps, boot_pred_med, color='tab:blue', alpha=0.35, linewidth=2, linestyle='--', label='bootstrap median')
         ax.set_xlabel("log(1/ε)")
         ax.set_ylabel("log N(ε)")
         ax.legend()
@@ -417,12 +441,15 @@ def main():
         fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
         x_lin = inv_eps
         y_lin = N_mean
-        ax.scatter(x_lin, y_lin, label="data", s=18)
-        # Power-law curve from log–log fit: N = A * (1/ε)^D, where A = exp(intercept)
-        xx = np.linspace(x_lin.min(), x_lin.max(), 200)
-        A = float(np.exp(fit.intercept))
-        yy = A * (xx ** fit.slope)
-        ax.plot(xx, yy, label=f"fit curve: D={dim:.4f}")
+        # Error bars in linear domain: use standard error of the mean across offsets
+        se_N = N_std / np.sqrt(np.maximum(nrep, 1))
+        ax.errorbar(x_lin, y_lin, yerr=se_N, fmt='o', ms=4, elinewidth=1.0,
+                    capsize=2, color='tab:blue', ecolor='tab:blue', alpha=0.9, label="data")
+        # Bootstrap prediction interval in linear domain (exp of log PI). No fit line here.
+        if args.band == "prediction" and 'boot_pred_lo' in locals() and boot_pred_lo is not None:
+            lo_lin = np.exp(boot_pred_lo)
+            hi_lin = np.exp(boot_pred_hi)
+            ax.fill_between(x_lin, lo_lin, hi_lin, color='tab:blue', alpha=0.15, label=f"{args.ci}% PI (bootstrap)")
         ax.set_xlabel("1/ε")
         ax.set_ylabel("N(ε)")
         ax.legend()
