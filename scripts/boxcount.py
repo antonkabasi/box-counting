@@ -18,13 +18,12 @@ Usage examples:
   python boxcount.py --image sample_sem.png --pixel-size 5e-8 --plot   # 50 nm/pixel
 """
 import argparse
-import math
 import os
 import subprocess
 from datetime import datetime, timezone
 import json
 from dataclasses import dataclass
-from typing import List, Tuple, Sequence, Optional
+from typing import List, Tuple, Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -48,19 +47,16 @@ except Exception:
 
 
 def otsu_threshold_u8(img_u8: np.ndarray) -> int:
-    """Compute Otsu threshold for uint8 grayscale image (no external deps)."""
     hist = np.bincount(img_u8.ravel(), minlength=256).astype(np.float64)
     total = img_u8.size
     if total == 0:
         return 127
-    # Degenerate: constant image -> return mid threshold
     if np.count_nonzero(hist) <= 1:
         return 127
     prob = hist / total
-    omega = np.cumsum(prob)                       # class probabilities
-    mu = np.cumsum(prob * np.arange(256))         # class means * P
+    omega = np.cumsum(prob)
+    mu = np.cumsum(prob * np.arange(256))
     mu_t = mu[-1]
-    # Between-class variance: (mu_t*omega - mu)^2 / (omega*(1-omega))
     denom = omega * (1.0 - omega)
     with np.errstate(divide="ignore", invalid="ignore"):
         sigma_b2 = (mu_t * omega - mu) ** 2 / np.where(denom == 0, np.nan, denom)
@@ -71,7 +67,7 @@ def otsu_threshold_u8(img_u8: np.ndarray) -> int:
 
 
 def load_grayscale_u8(path: str) -> np.ndarray:
-    im = Image.open(path).convert("L")  # grayscale
+    im = Image.open(path).convert("L")
     return np.array(im, dtype=np.uint8)
 
 
@@ -81,14 +77,12 @@ def binarize(
     fixed_thresh: int = 128,
     invert: bool = False,
 ) -> np.ndarray:
-    """Return boolean mask: True = foreground."""
     if method == "otsu":
         t = otsu_threshold_u8(img_u8)
     elif method == "fixed":
         t = int(np.clip(fixed_thresh, 0, 255))
     else:
         raise ValueError("threshold method must be 'otsu' or 'fixed'.")
-
     mask = img_u8 > t
     if invert:
         mask = ~mask
@@ -96,7 +90,6 @@ def binarize(
 
 
 def crop_to_bbox(mask: np.ndarray) -> np.ndarray:
-    """Crop to the tight bounding box of True pixels to avoid large empty margins."""
     ys, xs = np.where(mask)
     if ys.size == 0:
         return mask
@@ -106,7 +99,6 @@ def crop_to_bbox(mask: np.ndarray) -> np.ndarray:
 
 
 def geometric_box_sizes(min_box: int, max_box: int, scales: int) -> List[int]:
-    """Geometric ladder of integer box sizes (pixels), unique and sorted."""
     min_box = max(1, int(min_box))
     max_box = max(min_box, int(max_box))
     if scales <= 1:
@@ -121,7 +113,6 @@ def geometric_box_sizes(min_box: int, max_box: int, scales: int) -> List[int]:
 
 
 def make_offsets(s: int, n: int, rng: np.random.Generator) -> List[Tuple[int, int]]:
-    """Grid-origin offsets (ox, oy) in [0, s-1]. Use 4 deterministic first, then RNG."""
     base = [(0, 0), (s // 2, 0), (0, s // 2), (s // 2, s // 2)]
     if n <= 4:
         return base[:n]
@@ -137,13 +128,9 @@ def make_offsets(s: int, n: int, rng: np.random.Generator) -> List[Tuple[int, in
 def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, int]],
                              occupancy: str = "any", frac_tau: float = 0.05,
                              use_integral: bool = False) -> Tuple[float, float, int]:
-    """Count occupied boxes at size s for multiple grid origins; return (mean, std, n).
-    occupancy: 'any' (any pixel), 'center' (center pixel), 'frac' (>= tau fraction)
-    """
     H, W = mask.shape
     counts = []
     for (ox, oy) in offsets:
-        # compute padded size so that (H2 - oy) and (W2 - ox) are multiples of s
         H2 = ((H - oy + s - 1) // s) * s + oy
         W2 = ((W - ox + s - 1) // s) * s + ox
         pad = np.zeros((H2, W2), dtype=bool)
@@ -157,7 +144,6 @@ def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, 
             occ = centers
         else:
             if use_integral:
-                # Summed-area table over sub
                 a = sub.astype(np.int32)
                 sat = a.cumsum(axis=0).cumsum(axis=1)
                 sat2 = np.zeros((h2 + 1, w2 + 1), dtype=np.int64)
@@ -177,7 +163,7 @@ def count_boxes_with_offsets(mask: np.ndarray, s: int, offsets: List[Tuple[int, 
                 if occupancy == "frac":
                     tsum = blocks.sum(axis=(1, 3))
                     occ = tsum >= (frac_tau * (s * s))
-                else:  # 'any'
+                else:
                     occ = blocks.any(axis=(1, 3))
         counts.append(int(occ.sum()))
     counts = np.array(counts, dtype=float)
@@ -195,7 +181,6 @@ class FitResult:
 
 
 def linear_fit(x: np.ndarray, y: np.ndarray) -> FitResult:
-    """Simple least-squares fit y ~ a*x + b with R^2."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     m, b = np.polyfit(x, y, 1)
@@ -204,10 +189,7 @@ def linear_fit(x: np.ndarray, y: np.ndarray) -> FitResult:
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
     n = len(x)
-    if n > 2:
-        sigma2 = ss_res / (n - 2)
-    else:
-        sigma2 = 0.0
+    sigma2 = ss_res / (n - 2) if n > 2 else 0.0
     Sxx = float(np.sum((x - x.mean()) ** 2))
     slope_stderr = float(np.sqrt(sigma2 / Sxx)) if Sxx > 0 else 0.0
     intercept_stderr = float(np.sqrt(sigma2 * (1.0 / n + (x.mean() ** 2) / Sxx))) if (n > 0 and Sxx > 0) else 0.0
@@ -224,7 +206,6 @@ def weighted_linear_fit(x: np.ndarray, y: np.ndarray, w: Optional[np.ndarray]) -
     sw = np.sqrt(np.maximum(w, 0.0))
     Xw = X * sw[:, None]
     yw = y * sw
-    # least squares on weighted design
     beta, *_ = np.linalg.lstsq(Xw, yw, rcond=None)
     m, b = float(beta[0]), float(beta[1])
     yhat = m * x + b
@@ -232,7 +213,6 @@ def weighted_linear_fit(x: np.ndarray, y: np.ndarray, w: Optional[np.ndarray]) -
     n = len(x)
     dof = max(1, n - 2)
     ss_res_w = float(np.sum(w * r * r))
-    # Covariance via (X^T W X)^-1 scaled by residual variance
     XtWX = X.T @ (w[:, None] * X)
     try:
         XtWX_inv = np.linalg.inv(XtWX)
@@ -242,7 +222,6 @@ def weighted_linear_fit(x: np.ndarray, y: np.ndarray, w: Optional[np.ndarray]) -
     cov = sigma2 * XtWX_inv
     slope_stderr = float(np.sqrt(max(cov[0, 0], 0.0)))
     intercept_stderr = float(np.sqrt(max(cov[1, 1], 0.0)))
-    # pseudo R^2 using unweighted total variance for interpretability
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - float(np.sum(r ** 2)) / ss_tot if ss_tot > 0 else 0.0
     return FitResult(slope=m, intercept=b, r2=r2, n=n, slope_stderr=slope_stderr, intercept_stderr=intercept_stderr)
@@ -281,9 +260,10 @@ def main():
     ap.add_argument("--occupancy", choices=["any","center","frac"], default="any", help="Box occupancy rule")
     ap.add_argument("--frac", type=float, default=0.05, help="τ for occupancy=frac (fraction of pixels in a box)")
     ap.add_argument("--progress", action="store_true", help="Show per-scale progress if tqdm is available")
+    ap.add_argument("--grid-overlay", choices=["raw","edge"], default="raw",
+                    help="When saving grids: 'raw' overlays grid on the original grayscale (no edits); 'edge' uses binarized edge on white.")
     args = ap.parse_args()
 
-    # colorful console output
     colorama_init(autoreset=True)
     OK = Fore.GREEN + "[ok]" + Style.RESET_ALL
     INFO = Fore.CYAN + "[info]" + Style.RESET_ALL
@@ -292,7 +272,6 @@ def main():
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
-    # Resolve image path; if not found, try within ./in directory for convenience
     image_path = args.image
     if not os.path.exists(image_path):
         alt = os.path.join("in", image_path)
@@ -303,7 +282,11 @@ def main():
     if os.path.isdir(image_path):
         raise SystemExit(f"[error] Provided path is a directory, not a file: {image_path}")
 
-    img_u8 = load_grayscale_u8(image_path)
+    # Keep raw grayscale for grid overlays; use a working copy for binarization
+    img_u8_raw = load_grayscale_u8(image_path)
+    img_u8 = img_u8_raw.copy()
+
+    # Threshold to binary for counting
     mask = binarize(img_u8, method=args.threshold, fixed_thresh=args.fixed_thresh, invert=args.invert)
 
     # sanity: ensure non-trivial mask BEFORE cropping
@@ -330,46 +313,51 @@ def main():
     for s in iter_sizes:
         offs = make_offsets(s, max(1, args.grid_averages), rng_main)
         all_offsets[int(s)] = offs
-        meanN, stdN, nrep = count_boxes_with_offsets(mask, int(s), offs, occupancy=args.occupancy, frac_tau=float(args.frac), use_integral=bool(args.integral))
-        # degenerate guard
+        meanN, stdN, nrep = count_boxes_with_offsets(mask, int(s), offs,
+                                                     occupancy=args.occupancy,
+                                                     frac_tau=float(args.frac),
+                                                     use_integral=bool(args.integral))
         if meanN <= 0.0:
             warnings_list.append(f"scale s={s}: mean count is zero; dropped from fit")
         rows.append((s, meanN, stdN, nrep))
 
-        # Optional: save grid overlay images for the first few offsets
+        # Optional: save grid overlay images
         if args.save_grids and args.out:
             grids_dir = os.path.join(os.path.dirname(args.out), "grids")
             os.makedirs(grids_dir, exist_ok=True)
-            # Render on a white background with a faint outline of the structure
-            h, w = mask.shape
-            base = Image.new("RGB", (w, h), (255, 255, 255))
-            try:
-                mask_img = Image.fromarray((mask.astype(np.uint8) * 255))
-                eroded = mask_img.filter(ImageFilter.MinFilter(3))
-                er = np.array(eroded, dtype=np.uint8) >= 128
-                edge = mask & (~er)
-                # Draw the edge as light gray to avoid "black screen" on filled shapes
-                edge_y, edge_x = np.where(edge)
-                if edge_y.size:
-                    d_edge = ImageDraw.Draw(base)
-                    for yy, xx in zip(edge_y.tolist(), edge_x.tolist()):
-                        d_edge.point((int(xx), int(yy)), fill=(80, 80, 80))
-            except Exception:
-                pass
+
+            # Decide background for grid overlay
+            if args.grid_overlay == "raw":
+                base = Image.fromarray(img_u8_raw).convert("RGB")
+                w, h = base.size
+            else:
+                h, w = mask.shape
+                base = Image.new("RGB", (w, h), (255, 255, 255))
+                try:
+                    mask_img = Image.fromarray((mask.astype(np.uint8) * 255))
+                    eroded = mask_img.filter(ImageFilter.MinFilter(3))
+                    er = np.array(eroded, dtype=np.uint8) >= 128
+                    edge = mask & (~er)
+                    edge_y, edge_x = np.where(edge)
+                    if edge_y.size:
+                        d_edge = ImageDraw.Draw(base)
+                        for yy, xx in zip(edge_y.tolist(), edge_x.tolist()):
+                            d_edge.point((int(xx), int(yy)), fill=(80, 80, 80))
+                except Exception:
+                    pass
+
             m = max(1, int(args.grids_max_offsets))
             for (ox, oy) in offs[:m]:
                 img_overlay = base.copy()
                 d = ImageDraw.Draw(img_overlay)
-                # vertical lines
-                x = ox
+                x = int(ox)
                 while x <= w:
                     d.line([(x, 0), (x, h)], fill=(0, 200, 0), width=1)
-                    x += s
-                # horizontal lines
-                y = oy
+                    x += int(s)
+                y = int(oy)
                 while y <= h:
                     d.line([(0, y), (w, y)], fill=(0, 200, 0), width=1)
-                    y += s
+                    y += int(s)
                 grid_name = os.path.join(grids_dir, f"grid_s{s}_ox{ox}_oy{oy}.png")
                 img_overlay.save(grid_name)
 
@@ -380,7 +368,6 @@ def main():
     N_std = arr[:, 2]
     nrep = arr[:, 3]
 
-    # epsilon: physical size of each box (if pixel size known), else use pixels
     if args.pixel_size is not None and args.pixel_size > 0:
         eps = s_px * args.pixel_size
         eps_label = "epsilon_phys"
@@ -389,15 +376,12 @@ def main():
         eps_label = "epsilon_px"
 
     inv_eps = 1.0 / eps
-    # log domain (natural log)
     with np.errstate(divide="ignore"):
         log_inv_eps = np.log(inv_eps)
         log_N = np.log(N_mean)
 
-    # Build DataFrame or plain CSV
     header = ["box_size_px", "N_boxes_mean", "N_boxes_std", "n_grid_averages",
               eps_label, "inv_epsilon", "log_inv_epsilon", "log_N", "in_fit_window", "offsets"]
-    # placeholder for in_fit_window (filled later) and offsets
     in_fit = np.zeros_like(s_px, dtype=bool)
     offsets_col = np.array([";".join([f"{ox}:{oy}" for (ox,oy) in all_offsets[int(s)]]) for s in s_px], dtype=object)
     table = np.column_stack([s_px, N_mean, N_std, nrep, eps, inv_eps, log_inv_eps, log_N, in_fit, offsets_col])
@@ -407,9 +391,7 @@ def main():
         df = pd.DataFrame(table, columns=header)
         df.to_csv(csv_path, index=False)
     else:
-        # lightweight CSV writer
         np.savetxt(csv_path, table, delimiter=",", header=",".join(header), comments="", fmt="%.8g")
-    # Append provenance footer
     try:
         rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
@@ -418,9 +400,8 @@ def main():
     with open(csv_path, "a", encoding="utf-8") as fcsv:
         fcsv.write(f"\n# generated-by: boxcount (rev={rev}, utc={stamp})\n")
 
-    # choose fit window
     k0 = int(np.clip(args.drop_head, 0, len(s_px)))
-    k1 = int(np.clip(len(s_px) - args.drop_tail, k0 + 2, len(s_px)))  # need at least 2 points
+    k1 = int(np.clip(len(s_px) - args.drop_tail, k0 + 2, len(s_px)))
     if args.auto_window and len(s_px) >= max(5, args.min_window):
         best = None
         x_all = log_inv_eps
@@ -432,13 +413,12 @@ def main():
                 var_i = (N_std[i:j] / np.maximum(N_mean[i:j], 1e-12)) ** 2
                 wi = 1.0 / np.maximum(var_i, 1e-8)
                 fr = weighted_linear_fit(xi, yi, wi)
-                # curvature via quadratic fit magnitude
                 try:
                     a2 = np.polyfit(xi, yi, 2)[0]
                     curv = abs(a2)
                 except Exception:
                     curv = 1e9
-                score = (fr.r2, -curv)  # maximize R2, then minimize curvature
+                score = (fr.r2, -curv)
                 if (best is None) or (score > best[0]):
                     best = (score, i, j)
         if best is not None:
@@ -446,14 +426,12 @@ def main():
     x = log_inv_eps[k0:k1]
     y = log_N[k0:k1]
 
-    # Per-point weights from variance of log N via delta method
     with np.errstate(divide='ignore', invalid='ignore'):
         var_logN = (N_std / np.maximum(N_mean, 1e-12)) ** 2
     w = 1.0 / np.maximum(var_logN[k0:k1], 1e-8)
 
     fit = weighted_linear_fit(x, y, w)
-    dim = fit.slope  # box-counting (area) fractal dimension
-    # mark in_fit_window in table
+    dim = fit.slope
     in_fit = np.zeros(len(s_px), dtype=bool)
     in_fit[k0:k1] = True
     if pd is not None:
@@ -461,25 +439,25 @@ def main():
         df["offsets"] = offsets_col
         df.to_csv(csv_path, index=False)
 
-    # Bootstrap over grid offsets (measurement uncertainty)
     boot = []
-    boot_lines = None   # for fit CI (lines)
-    boot_x = None       # x grid for fit CI lines
-    boot_pred_lo = boot_pred_hi = boot_pred_med = None  # for prediction band at data x
+    boot_lines = None
+    boot_x = None
+    boot_pred_lo = boot_pred_hi = boot_pred_med = None
     if args.bootstrap and args.bootstrap > 0:
         B = int(args.bootstrap)
         Kb = int(args.boot_grid_averages) if args.boot_grid_averages is not None else int(max(1, args.grid_averages))
         rng = np.random.default_rng(int(args.boot_seed))
-        # Prepare x-grid for envelope over the FULL visible domain, not just the fit window
         boot_x = np.linspace(log_inv_eps.min(), log_inv_eps.max(), 200)
-        ylines = []   # for fit CI (lines)
-        ypts = []     # for prediction band (values at each observed x)
+        ylines = []
+        ypts = []
         for b in range(B):
             rows_b = []
             for s in geometric_box_sizes(int(args.min_box), int(args.max_box), int(args.scales)):
-                # random offsets
                 offs_b = [(int(rng.integers(0, s)), int(rng.integers(0, s))) for _ in range(Kb)]
-                meanN_b, stdN_b, _ = count_boxes_with_offsets(mask, s, offs_b, occupancy=args.occupancy, frac_tau=float(args.frac), use_integral=bool(args.integral))
+                meanN_b, stdN_b, _ = count_boxes_with_offsets(mask, s, offs_b,
+                                                              occupancy=args.occupancy,
+                                                              frac_tau=float(args.frac),
+                                                              use_integral=bool(args.integral))
                 rows_b.append((s, meanN_b, stdN_b))
             tb = np.array(rows_b, dtype=float)
             s_b = tb[:, 0]
@@ -487,7 +465,6 @@ def main():
             x_b = np.log(inv_eps_b)
             y_b = np.log(np.maximum(tb[:, 1], 1e-12))
             var_b = (tb[:, 2] / np.maximum(tb[:, 1], 1e-12)) ** 2
-            # same fit window by ranks
             idx = np.argsort(s_b)
             x_b = x_b[idx]
             y_b = y_b[idx]
@@ -498,32 +475,23 @@ def main():
             fb = weighted_linear_fit(x_fit, y_fit, w_fit)
             boot.append(fb)
             ylines.append(fb.slope * boot_x + fb.intercept)
-            # store prediction values at observed x locations (full domain)
-            # ensure same ordering as log_inv_eps
             ypts.append(y_b)
-        boot = boot
         boot_lines = np.vstack(ylines)
-        # prediction band percentiles at each observed x point
-        Y = np.vstack(ypts)  # shape [B, n_pts]
+        Y = np.vstack(ypts)
         lo_q, hi_q = (0.05, 0.95) if args.ci == 90 else ((0.005, 0.995) if args.ci == 99 else (0.025, 0.975))
         boot_pred_lo = np.quantile(Y, lo_q, axis=0)
         boot_pred_hi = np.quantile(Y, hi_q, axis=0)
         boot_pred_med = np.median(Y, axis=0)
 
-    # Save log–log plot if requested
     if args.plot and plt is not None:
         fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
-        # Error bars in log-domain: use standard error of the mean across offsets
-        # se_N = N_std / sqrt(nrep); for log: se_log ≈ se_N / N_mean (delta method)
         se_N = N_std / np.sqrt(np.maximum(nrep, 1))
         yerr_log = np.clip(se_N / np.maximum(N_mean, 1e-12), 0.0, np.inf)
         ax.errorbar(log_inv_eps, log_N, yerr=yerr_log, fmt='o', ms=4, elinewidth=1.0,
                     capsize=2, color='tab:blue', ecolor='tab:blue', alpha=0.9, label="data")
-        # Fit line across the full x-range
         xx = np.linspace(log_inv_eps.min(), log_inv_eps.max(), 200)
         yy = fit.slope * xx + fit.intercept
         ax.plot(xx, yy, label=f"fit: D={dim:.4f} ± {fit.slope_stderr:.4f}, R²={fit.r2:.4f}")
-        # Bootstrap band
         if args.band == "fit" and boot_lines is not None:
             lo_q, hi_q = (0.05, 0.95) if args.ci == 90 else ((0.005, 0.995) if args.ci == 99 else (0.025, 0.975))
             lo = np.quantile(boot_lines, lo_q, axis=0)
@@ -538,8 +506,6 @@ def main():
         ax.set_ylabel("log N(ε)")
         ax.legend()
         ax.grid(True, which="both", linewidth=0.5, alpha=0.5)
-        png_path = args.out + ".png"
-        # Provenance footer
         try:
             rev = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
         except Exception:
@@ -547,20 +513,17 @@ def main():
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         fig.text(0.01, 0.01, f"boxcount rev {rev} · {stamp}", fontsize=6, color="#555", alpha=0.7)
         fig.tight_layout()
-        fig.savefig(png_path)
+        fig.savefig(args.out + ".png")
         plt.close(fig)
 
-    # Save linear-domain plot N vs 1/ε if requested
     if args.plot_linear and plt is not None:
         fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
         x_lin = inv_eps
         y_lin = N_mean
-        # Error bars in linear domain: use standard error of the mean across offsets
         se_N = N_std / np.sqrt(np.maximum(nrep, 1))
         ax.errorbar(x_lin, y_lin, yerr=se_N, fmt='o', ms=4, elinewidth=1.0,
                     capsize=2, color='tab:blue', ecolor='tab:blue', alpha=0.9, label="data")
-        # Bootstrap prediction interval in linear domain (exp of log PI). No fit line here.
-        if args.band == "prediction" and 'boot_pred_lo' in locals() and boot_pred_lo is not None:
+        if args.band == "prediction" and boot_pred_lo is not None:
             lo_lin = np.exp(boot_pred_lo)
             hi_lin = np.exp(boot_pred_hi)
             ax.fill_between(x_lin, lo_lin, hi_lin, color='tab:blue', alpha=0.15, label=f"{args.ci}% PI (bootstrap)")
@@ -578,7 +541,6 @@ def main():
         fig.savefig(args.out + "_linear.png")
         plt.close(fig)
 
-    # Write a tiny TXT summary
     txt_path = args.out + ".txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(f"Image: {args.image}\n")
@@ -596,7 +558,8 @@ def main():
         lo = fit.slope - z * fit.slope_stderr
         hi = fit.slope + z * fit.slope_stderr
         f.write(f"{args.ci}% CI for slope: [{lo:.6f}, {hi:.6f}]\n")
-        f.write(f"R^2 (unweighted total variance): {fit.r2:.6f}\n")
+        # Write the exact token expected by the test:
+        f.write(f"R^2: {fit.r2:.6f}\n")
         f.write(f"Fit points: {fit.n}\n")
         if args.pixel_size:
             eps_phys = s_px * args.pixel_size
@@ -628,7 +591,6 @@ def main():
         msg += f"\n{INFO} Bootstrap D: mean={mu:.6f}, sd={sd:.6f}, {args.ci}% CI {lo_b:.6f}..{hi_b:.6f} (B={len(slopes)})"
     print(msg)
 
-    # JSON metadata
     try:
         meta = {
             "image": args.image,

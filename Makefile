@@ -1,5 +1,6 @@
 # Makefile for running box-count tests (line, sine, rectangle)
 # Usage:
+#   make all         # run everything twice: without PREP and with PREP, saving to separate folders
 #   make deps        # install Python deps (numpy, pillow, pandas, matplotlib)
 #   make generate    # create test images
 #   make analyze     # run box-count + save CSV/PNG/TXT
@@ -10,6 +11,14 @@
 #   make dims        # print fitted D from summaries
 #   make clean       # remove outputs
 #   make distclean   # also remove generated images
+#
+# Prep (preprocessing) controls:
+#   Default is OFF. Enable with:
+#     make analyze_in PREP=true
+#   or (lowercase alias also works):
+#     make analyze_in prep=true
+#   Disable explicitly:
+#     make analyze_in PREP=false|no|off|0
 
 VENV      := .venv
 PY        := $(VENV)/bin/python
@@ -18,7 +27,7 @@ IMAGEDIR  := assets
 OUTDIR    := out
 RESULTS_OUTDIR := $(OUTDIR)/results
 RESULTS_OUT_PREFIX := $(if $(RUN),$(RESULTS_OUTDIR)/$(RUN),$(RESULTS_OUTDIR))
-EX_OUTDIR := $(OUTDIR)/examples
+EX_OUTDIR ?= $(OUTDIR)/examples
 EX_STAMP  := $(EX_OUTDIR)/.stamp
 GEODIR    := $(IMAGEDIR)/geography
 EX_GEO_DIR:= $(EX_OUTDIR)/geography
@@ -33,19 +42,48 @@ FRACTALS  := cantor1d cantordust koch vicsek qkoch1 \
 FRACDIR   := $(IMAGEDIR)/fractals
 FRAC_IMAGES := $(addprefix $(FRACDIR)/,$(addsuffix .png,$(FRACTALS)))
 
-# Main example plots (explicitly enumerate fractal outputs)
-PLOTS     := $(EX_OUTDIR)/line/line.png \
-             $(EX_OUTDIR)/sine/sine.png \
-             $(EX_OUTDIR)/rectangle/rectangle.png \
-             $(EX_OUTDIR)/circle/circle.png \
-             $(EX_OUTDIR)/sierpinski/sierpinski.png \
-             $(foreach f,$(FRACTALS),$(EX_OUTDIR)/fractals/$(f)/$(f).png)
+# === Outputs for examples ===
+# Use deferred '=' so this re-evaluates when EX_OUTDIR is overridden in sub-makes.
+EX_SIMPLE_PNGS = $(EX_OUTDIR)/line/line.png \
+                 $(EX_OUTDIR)/sine/sine.png \
+                 $(EX_OUTDIR)/rectangle/rectangle.png \
+                 $(EX_OUTDIR)/circle/circle.png \
+                 $(EX_OUTDIR)/sierpinski/sierpinski.png
+
+# Fractals are driven by per-fractal stamp files (single % only, GNU make requirement).
+EX_FRAC_STAMPS = $(addprefix $(EX_OUTDIR)/fractals/,$(addsuffix /.done,$(FRACTALS)))
+
+# Everything examples must build:
+PLOTS = $(EX_SIMPLE_PNGS) $(EX_FRAC_STAMPS)
 
 .PHONY: all venv deps generate examples analyze show line sine rectangle dims clean distclean seed_in redo-examples \
-        analyze_image analyze_in dims_results dims_real geography geography-% uk croatia
+        analyze_image analyze_in dims_results dims_real geography geography-% uk croatia all_prep all_noprep
 
-all: deps generate examples
+# =========================
+# Orchestrated full runs
+# =========================
+all: all_noprep all_prep
+	@echo "[ok] all runs complete:"
+	@echo " - examples (no prep):  $(OUTDIR)/examples_noprep"
+	@echo " - examples (with prep):$(OUTDIR)/examples_prep"
+	@echo " - results (no prep):   $(RESULTS_OUTDIR)/noprep"
+	@echo " - results (with prep): $(RESULTS_OUTDIR)/prep"
 
+all_noprep: deps generate
+	@echo "[info] ===== Running NO-PREP examples ====="
+	@$(MAKE) -s examples PREP=false EX_OUTDIR=$(OUTDIR)/examples_noprep
+	@echo "[info] ===== Running NO-PREP analyze_in (if inputs present) ====="
+	@$(MAKE) -s analyze_in PREP=false RUN=noprep
+
+all_prep: deps generate
+	@echo "[info] ===== Running PREP examples ====="
+	@$(MAKE) -s examples PREP=true EX_OUTDIR=$(OUTDIR)/examples_prep
+	@echo "[info] ===== Running PREP analyze_in (if inputs present) ====="
+	@$(MAKE) -s analyze_in PREP=true RUN=prep
+
+# =========================
+# Env & deps
+# =========================
 venv:
 	@test -d $(VENV) || python3 -m venv $(VENV)
 	@$(PIP) -q install --upgrade pip setuptools wheel
@@ -54,23 +92,8 @@ deps: venv requirements.txt
 	@$(PIP) -q install -r requirements.txt
 	@echo "[ok] dependencies installed in $(VENV)/"
 
-$(IMAGEDIR):
-	@mkdir -p $(IMAGEDIR)
-
-$(OUTDIR):
-	@mkdir -p $(OUTDIR)
-
-$(EX_OUTDIR): | $(OUTDIR)
-	@mkdir -p $(EX_OUTDIR)
-
-$(GEODIR): | $(IMAGEDIR)
-	@mkdir -p $(GEODIR)
-
-$(EX_GEO_DIR): | $(EX_OUTDIR)
-	@mkdir -p $(EX_GEO_DIR)
-
-$(FRACDIR): | $(IMAGEDIR)
-	@mkdir -p $(FRACDIR)
+$(IMAGEDIR) $(OUTDIR) $(EX_OUTDIR) $(GEODIR) $(FRACDIR):
+	@mkdir -p $@
 
 $(RES_GEO_DIR): | $(RESULTS_OUTDIR)
 	@mkdir -p $(RES_GEO_DIR)
@@ -85,8 +108,49 @@ $(RESULTS_OUTDIR): | $(OUTDIR)
 generate: $(IMAGES) $(FRAC_IMAGES)
 	@echo "[ok] test images generated in $(IMAGEDIR)/"
 
-# Cleaning (preprocess) defaults (override on CLI). Booleans accept: true/false, yes/no, on/off, 1/0.
+# Image generation
+$(IMAGEDIR)/line.png: tests/generate_images.py | $(IMAGEDIR) venv
+	@test -f $@ || $(PY) tests/generate_images.py --line --outdir $(IMAGEDIR)
+$(IMAGEDIR)/sine.png: tests/generate_images.py | $(IMAGEDIR) venv
+	@test -f $@ || $(PY) tests/generate_images.py --sine --outdir $(IMAGEDIR)
+$(IMAGEDIR)/rectangle.png: tests/generate_images.py | $(IMAGEDIR) venv
+	@test -f $@ || $(PY) tests/generate_images.py --rectangle --outdir $(IMAGEDIR)
+$(IMAGEDIR)/circle.png: tests/generate_images.py | $(IMAGEDIR) venv
+	@test -f $@ || $(PY) tests/generate_images.py --circle --outdir $(IMAGEDIR)
+$(IMAGEDIR)/sierpinski.png: tests/generate_images.py | $(IMAGEDIR) venv
+	@test -f $@ || $(PY) tests/generate_images.py --sierpinski --outdir $(IMAGEDIR)
+
+# Fractals generation
+FRAC_ITERS ?= 4
+$(FRACDIR)/%.png: tests/generate_fractals.py | $(FRACDIR) venv
+	@test -f $@ || $(PY) tests/generate_fractals.py --name $* --iters $(FRAC_ITERS) --outdir $(FRACDIR)
+
+# Geography images (from Natural Earth via GeoPandas)
+$(GEODIR)/%.png: tests/generate_geography.py | $(GEODIR) venv
+	$(PY) tests/generate_geography.py --country $* --outdir $(GEODIR) --mode outline --line-width 3 --source $(SRC_DATA) --source-url $(SRC_URL) --crs auto
+
+# === Examples with stamp so 2nd run skips building if up-to-date ===
+examples: $(EX_STAMP)
+
+$(EX_STAMP): generate $(PLOTS) | $(EX_OUTDIR)
+	@echo "[ok] examples complete. See $(EX_OUTDIR)/{line,sine,rectangle,circle,sierpinski}/<name>.{csv,txt,png,_linear.png} and grids/"
+	@touch $@
+
+redo-examples:
+	@rm -f $(EX_STAMP)
+	@$(MAKE) examples
+
+# Back-compat alias
+analyze: examples
+
+# =========================
+# Prep configuration (OFF by default)
+# =========================
 PREP ?= false
+ifdef prep
+PREP := $(prep)
+endif
+
 CLEAN_ALPHA_BG ?= white
 CLEAN_TARGET_COLOR ?= auto
 CLEAN_COLOR_DELTA ?= 40
@@ -98,7 +162,6 @@ CLEAN_CLOSE ?= 0
 CLEAN_BORDERIZE ?= 1
 CLEAN_CROP ?= true
 CLEAN_OUT_FG ?= auto
-# When PREP=true, add this many pixels of padding to analysis (boxcount --pad)
 PAD_ON_PREP ?= 8
 
 # Normalize booleans to 1/0
@@ -107,10 +170,7 @@ PREP_BOOL := $(call bool,$(PREP))
 CLEAN_INVERT_BOOL := $(call bool,$(CLEAN_INVERT))
 CLEAN_CROP_BOOL := $(call bool,$(CLEAN_CROP))
 
-# Compose cleaner args
-# Resolve output foreground color: auto maps invert=true→white, invert=false→black
 ifeq ($(strip $(CLEAN_OUT_FG)),auto)
-  # For PREP=true, flip the default colors: produce black foreground on white.
   ifeq ($(PREP_BOOL),1)
     ifeq ($(CLEAN_INVERT_BOOL),1)
       CLEAN_OUT_FG_RES := black
@@ -138,9 +198,7 @@ ifeq ($(CLEAN_CROP_BOOL),1)
   CLEAN_ARGS += --crop
 endif
 
-# If we preprocess (PREP=1), the cleaned image is already binary with
-# foreground as white; do not invert in boxcount. Otherwise, keep --invert.
-# Determine whether to pass --invert to boxcount based on PREP and output FG color
+# boxcount flags derived from PREP
 BOX_INV :=
 ifeq ($(PREP_BOOL),1)
   ifneq ($(strip $(CLEAN_OUT_FG_RES)),white)
@@ -150,107 +208,86 @@ else
   BOX_INV := --invert
 endif
 
-# Pad only when PREP is enabled
 BOX_PAD :=
 ifeq ($(PREP_BOOL),1)
   BOX_PAD := --pad $(PAD_ON_PREP)
 endif
 
-# Image generation rules
-$(IMAGEDIR)/line.png: tests/generate_images.py | $(IMAGEDIR) venv
-	@test -f $@ || $(PY) tests/generate_images.py --line --outdir $(IMAGEDIR)
+BOX_CROP :=
+ifeq ($(PREP_BOOL),1)
+  BOX_CROP := --crop
+endif
 
-$(IMAGEDIR)/sine.png: tests/generate_images.py | $(IMAGEDIR) venv
-	@test -f $@ || $(PY) tests/generate_images.py --sine --outdir $(IMAGEDIR)
+GRID_OVERLAY_MODE := raw
+ifeq ($(PREP_BOOL),1)
+  GRID_OVERLAY_MODE := edge
+endif
 
-$(IMAGEDIR)/rectangle.png: tests/generate_images.py | $(IMAGEDIR) venv
-	@test -f $@ || $(PY) tests/generate_images.py --rectangle --outdir $(IMAGEDIR)
-
-$(IMAGEDIR)/circle.png: tests/generate_images.py | $(IMAGEDIR) venv
-	@test -f $@ || $(PY) tests/generate_images.py --circle --outdir $(IMAGEDIR)
-
-$(IMAGEDIR)/sierpinski.png: tests/generate_images.py | $(IMAGEDIR) venv
-	@test -f $@ || $(PY) tests/generate_images.py --sierpinski --outdir $(IMAGEDIR)
-
-# Fractals generation
-FRAC_ITERS ?= 4
-$(FRACDIR)/%.png: tests/generate_fractals.py | $(FRACDIR) venv
-	@test -f $@ || $(PY) tests/generate_fractals.py --name $* --iters $(FRAC_ITERS) --outdir $(FRACDIR)
-
-# Geography images (from Natural Earth via GeoPandas)
-$(GEODIR)/%.png: tests/generate_geography.py | $(GEODIR) venv
-	$(PY) tests/generate_geography.py --country $* --outdir $(GEODIR) --mode outline --line-width 3 --source $(SRC_DATA) --source-url $(SRC_URL) --crs auto
-
-# === Examples with stamp so 2nd run skips building if up-to-date ===
-examples: $(EX_STAMP)
-
-$(EX_STAMP): generate $(PLOTS) | $(EX_OUTDIR)
-	@echo "[ok] examples complete. See $(EX_OUTDIR)/{line,sine,rectangle,circle,sierpinski}/<name>.{csv,txt,png,_linear.png} and grids/"
-	@touch $@
-
-redo-examples:
-	@rm -f $(EX_STAMP)
-	@$(MAKE) examples
-
-# Back-compat alias
-analyze: examples
-
-# Produce main PNGs (recipes also create linear PNGs, CSV/TXT, and grids)
+# =========================
+# Example pipelines (no multiple % in targets)
+# =========================
 $(EX_OUTDIR)/line/line.png: $(IMAGEDIR)/line.png | $(EX_OUTDIR) venv
 	@mkdir -p $(EX_OUTDIR)/line
 	$(PY) scripts/boxcount.py \
 	  --image $< \
 	  --out $(EX_OUTDIR)/line/line \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
-
-# Fractal example plots
-$(EX_OUTDIR)/fractals/%/%.png: $(FRACDIR)/%.png | $(EX_OUTDIR) venv
-	@mkdir -p $(EX_OUTDIR)/fractals/$*
-	$(PY) scripts/boxcount.py \
-	  --image $< \
-	  --out $(EX_OUTDIR)/fractals/$*/$* \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
-	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --seed 12345 --auto-window --band prediction \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
 
 $(EX_OUTDIR)/sine/sine.png: $(IMAGEDIR)/sine.png | $(EX_OUTDIR) venv
 	@mkdir -p $(EX_OUTDIR)/sine
 	$(PY) scripts/boxcount.py \
 	  --image $< \
 	  --out $(EX_OUTDIR)/sine/sine \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
 
 $(EX_OUTDIR)/rectangle/rectangle.png: $(IMAGEDIR)/rectangle.png | $(EX_OUTDIR) venv
 	@mkdir -p $(EX_OUTDIR)/rectangle
 	$(PY) scripts/boxcount.py \
 	  --image $< \
 	  --out $(EX_OUTDIR)/rectangle/rectangle \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
 
 $(EX_OUTDIR)/circle/circle.png: $(IMAGEDIR)/circle.png | $(EX_OUTDIR) venv
 	@mkdir -p $(EX_OUTDIR)/circle
 	$(PY) scripts/boxcount.py \
 	  --image $< \
 	  --out $(EX_OUTDIR)/circle/circle \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
 
 $(EX_OUTDIR)/sierpinski/sierpinski.png: $(IMAGEDIR)/sierpinski.png | $(EX_OUTDIR) venv
 	@mkdir -p $(EX_OUTDIR)/sierpinski
 	$(PY) scripts/boxcount.py \
 	  --image $< \
 	  --out $(EX_OUTDIR)/sierpinski/sierpinski \
-	  --threshold fixed --fixed-thresh 128 --invert --crop \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
+
+# Fractals: build a ".done" stamp per fractal (single %), produce all usual outputs inside.
+$(EX_OUTDIR)/fractals/%/.done: $(FRACDIR)/%.png | $(EX_OUTDIR) venv
+	@mkdir -p $(EX_OUTDIR)/fractals/$*
+	$(PY) scripts/boxcount.py \
+	  --image $< \
+	  --out $(EX_OUTDIR)/fractals/$*/$* \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) \
+	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 --bootstrap 50 \
+	  --seed 12345 --auto-window --band prediction \
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE)
+	@touch $@
 
 show: examples
 	@if command -v xdg-open >/dev/null 2>&1; then \
@@ -271,16 +308,12 @@ show: examples
 
 line: $(IMAGEDIR)/line.png $(EX_OUTDIR)/line/line.png
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(EX_OUTDIR)/line/line.png; elif command -v open >/dev/null 2>&1; then open $(EX_OUTDIR)/line/line.png; fi
-
 sine: $(IMAGEDIR)/sine.png $(EX_OUTDIR)/sine/sine.png
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(EX_OUTDIR)/sine/sine.png; elif command -v open >/dev/null 2>&1; then open $(EX_OUTDIR)/sine/sine.png; fi
-
 rectangle: $(IMAGEDIR)/rectangle.png $(EX_OUTDIR)/rectangle/rectangle.png
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(EX_OUTDIR)/rectangle/rectangle.png; elif command -v open >/dev/null 2>&1; then open $(EX_OUTDIR)/rectangle/rectangle.png; fi
-
 circle: $(IMAGEDIR)/circle.png $(EX_OUTDIR)/circle/circle.png
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(EX_OUTDIR)/circle/circle.png; elif command -v open >/dev/null 2>&1; then open $(EX_OUTDIR)/circle/circle.png; fi
-
 sierpinski: $(IMAGEDIR)/sierpinski.png $(EX_OUTDIR)/sierpinski/sierpinski.png
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(EX_OUTDIR)/sierpinski/sierpinski.png; elif command -v open >/dev/null 2>&1; then open $(EX_OUTDIR)/sierpinski/sierpinski.png; fi
 
@@ -290,7 +323,6 @@ sierpinski: $(IMAGEDIR)/sierpinski.png $(EX_OUTDIR)/sierpinski/sierpinski.png
 # Allow positional form: `make analyze_image path/to/image.png`
 ifneq ($(filter analyze_image,$(MAKECMDGOALS)),)
 IMAGE := $(if $(IMAGE),$(IMAGE),$(word 2,$(MAKECMDGOALS)))
-# Prevent make from treating the second word as a target
 $(IMAGE): ; @:
 .PHONY: $(IMAGE)
 endif
@@ -309,8 +341,7 @@ analyze_image: | venv $(OUTDIR) $(RESULTS_OUTDIR)
 	fi; \
 	b=$$(basename "$$SRC"); n=$${b%.*}; \
 	mkdir -p "$(RESULTS_OUT_PREFIX)/$$n"; \
-	# Optional preprocessing
-	if [ "$(PREP)" = "1" ]; then \
+	if [ "$(PREP_BOOL)" = "1" ]; then \
 	  CLEAN_OUT="$(RESULTS_OUT_PREFIX)/$$n/preprocessed.png"; \
 	  $(PY) scripts/clean_image.py --in "$$SRC" --out "$$CLEAN_OUT" $(CLEAN_ARGS); \
 	  SRC="$$CLEAN_OUT"; \
@@ -318,9 +349,10 @@ analyze_image: | venv $(OUTDIR) $(RESULTS_OUTDIR)
 	$(PY) scripts/boxcount.py \
 	  --image "$$SRC" \
 	  --out "$(RESULTS_OUT_PREFIX)/$$n/$$n" \
-	  --threshold fixed --fixed-thresh 128 $(BOX_INV) --crop $(BOX_PAD) --bootstrap 50 \
+	  --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) --bootstrap 50 \
 	  --min-box 2 --max-box 128 --scales 11 --grid-averages 4 \
-	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 || true
+	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	  --grid-overlay $(GRID_OVERLAY_MODE) || true
 
 .PHONY: analyze_in
 analyze_in: | venv $(OUTDIR) $(INDIR) $(RESULTS_OUTDIR)
@@ -341,7 +373,7 @@ analyze_in: | venv $(OUTDIR) $(INDIR) $(RESULTS_OUTDIR)
 	  mkdir -p "$(RESULTS_OUT_PREFIX)/$$n"; \
 	  echo "[info] analyzing $$f -> $(RESULTS_OUT_PREFIX)/$$n"; \
 	  SRC="$$f"; \
-	  if [ "$(PREP)" = "1" ]; then \
+	  if [ "$(PREP_BOOL)" = "1" ]; then \
 	    CLEAN_OUT="$(RESULTS_OUT_PREFIX)/$$n/preprocessed.png"; \
 	    $(PY) scripts/clean_image.py --in "$$SRC" --out "$$CLEAN_OUT" $(CLEAN_ARGS); \
 	    SRC="$$CLEAN_OUT"; \
@@ -349,9 +381,10 @@ analyze_in: | venv $(OUTDIR) $(INDIR) $(RESULTS_OUTDIR)
 	  $(PY) scripts/boxcount.py \
 	    --image "$$SRC" \
 	    --out "$(RESULTS_OUT_PREFIX)/$$n/$$n" \
-	    --threshold fixed --fixed-thresh 128 $(BOX_INV) --crop $(BOX_PAD) --bootstrap 50 \
+	    --threshold fixed --fixed-thresh 128 $(BOX_INV) $(BOX_CROP) $(BOX_PAD) --bootstrap 50 \
 	    --min-box 2 --max-box 128 --scales 11 --grid-averages 4 \
-	    --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 || true \
+	    --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1 \
+	    --grid-overlay $(GRID_OVERLAY_MODE) || true \
 	' _ {}
 
 .PHONY: test
@@ -404,7 +437,6 @@ dims_real: dims_results
 ifneq ($(filter geography,$(MAKECMDGOALS)),)
 COUNTRY := $(word 2,$(MAKECMDGOALS))
 SLUG := $(shell printf '%s' "$(COUNTRY)" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-# prevent make from trying to build the second goal as a target
 $(COUNTRY): ; @:
 endif
 
@@ -420,7 +452,6 @@ geography: | venv $(GEODIR) $(RES_GEO_DIR)
 	  --drop-head 2 --drop-tail 1 --plot --plot-linear --save-grids --grids-max-offsets 1
 	@if command -v xdg-open >/dev/null 2>&1; then xdg-open $(RES_GEO_DIR)/$(SLUG)/$(SLUG).png; elif command -v open >/dev/null 2>&1; then open $(RES_GEO_DIR)/$(SLUG)/$(SLUG).png; fi
 
-# Hyphenated form: `make geography-uk`
 geography-%: $(GEODIR)/%.png | $(RES_GEO_DIR)
 	@mkdir -p $(RES_GEO_DIR)/$*
 	$(PY) scripts/boxcount.py \
@@ -441,7 +472,7 @@ dims: examples
 	done
 
 clean:
-	@rm -rf $(EX_OUTDIR) $(RESULTS_OUTDIR)
+	@rm -rf $(OUTDIR)/examples $(OUTDIR)/examples_noprep $(OUTDIR)/examples_prep $(RESULTS_OUTDIR)
 	@echo "[ok] cleaned $(OUTDIR)/ artifacts"
 
 distclean: clean

@@ -24,3 +24,6 @@ in/
 
 # Jupyter (if any)
 .ipynb_checkpoints/
+
+#literature
+*.pdf
